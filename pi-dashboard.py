@@ -15,6 +15,7 @@ import json
 import socket
 import subprocess
 from datetime import datetime
+from functools import lru_cache
 
 from bottle import Bottle, response
 
@@ -30,27 +31,23 @@ TEMP_CRITICAL = 80            # °C — red
 # ================== APP ==================
 app = Bottle()
 
-_cpu_count = None
-
 
 # ================== METRIC READERS ==================
 
+@lru_cache(maxsize=1)
 def read_cpu_count():
     """Count CPU cores (cached)."""
-    global _cpu_count
-    if _cpu_count is None:
-        n = 0
-        with open("/proc/cpuinfo") as f:
-            for line in f:
-                if line.startswith("processor"):
-                    n += 1
-        _cpu_count = n or 1
-    return _cpu_count
+    n = 0
+    with open("/proc/cpuinfo", encoding="utf-8") as f:
+        for line in f:
+            if line.startswith("processor"):
+                n += 1
+    return n or 1
 
 
 def read_load():
     """Read load averages and derive a usage percentage."""
-    with open("/proc/loadavg") as f:
+    with open("/proc/loadavg", encoding="utf-8") as f:
         p = f.read().split()
     load1, load5, load15 = float(p[0]), float(p[1]), float(p[2])
     cores = read_cpu_count()
@@ -67,7 +64,7 @@ def read_load():
 def read_memory():
     """Parse /proc/meminfo for RAM usage."""
     info = {}
-    with open("/proc/meminfo") as f:
+    with open("/proc/meminfo", encoding="utf-8") as f:
         for line in f:
             parts = line.split()
             info[parts[0].rstrip(":")] = int(parts[1])  # kB
@@ -85,7 +82,7 @@ def read_memory():
 def read_temperature():
     """Read CPU temperature from thermal zone."""
     try:
-        with open("/sys/class/thermal/thermal_zone0/temp") as f:
+        with open("/sys/class/thermal/thermal_zone0/temp", encoding="utf-8") as f:
             temp = int(f.read().strip()) / 1000.0
         if temp >= TEMP_CRITICAL:
             status = "critical"
@@ -108,7 +105,7 @@ def read_disk():
     try:
         r = subprocess.run(
             ["df", "-B1", DISK_PATH],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=5, check=False,
         )
         if r.returncode != 0:
             return None
@@ -137,7 +134,7 @@ def read_disk():
 def read_uptime():
     """Human-readable uptime from /proc/uptime."""
     try:
-        with open("/proc/uptime") as f:
+        with open("/proc/uptime", encoding="utf-8") as f:
             sec = float(f.read().split()[0])
         d = int(sec // 86400)
         h = int(sec % 86400 // 3600)
@@ -156,7 +153,7 @@ def read_uptime():
 def read_ups():
     """Read UPS status JSON written by ups-battery-monitor.py."""
     try:
-        with open(UPS_STATUS_FILE) as f:
+        with open(UPS_STATUS_FILE, encoding="utf-8") as f:
             data = json.load(f)
         data["available"] = True
         return data
@@ -200,7 +197,7 @@ def read_top_processes(sort_key="cpu", count=10):
     try:
         r = subprocess.run(
             ["ps", "-eo", "pid,%cpu,%mem,args", "--sort", flag, "--no-headers"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=5, check=False,
         )
         if r.returncode != 0:
             return []

@@ -2,6 +2,8 @@
 
 Lightweight web dashboard for Raspberry Pi system monitoring. A single Python file serves a dark-themed UI with live metrics — no build step, no frontend framework.
 
+![Pi Dashboard — memory, CPU, temperature, disk, UPS, and process metrics](docs/screenshot.png)
+
 **Web UI:** `http://<pi-ip>:8585`  
 **API:** `http://<pi-ip>:8585/api/stats`
 
