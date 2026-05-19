@@ -1,0 +1,14 @@
+[Unit]
+Description=Pi Monitoring Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/opt/pi-dashboard/venv/bin/python /opt/pi-dashboard/pi-dashboard.py
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
