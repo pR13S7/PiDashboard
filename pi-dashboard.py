@@ -695,9 +695,14 @@ function battBadge(pct) {
 }
 
 function mkBirdnet(b) {
-  var c = document.createElement('div');
+  var c = document.createElement('a');
   c.className = 'card';
   c.id = 'birdnet-card';
+  c.href = 'http://pi.lan/';
+  c.target = '_blank';
+  c.rel = 'noopener';
+  c.style.textDecoration = 'none';
+  c.style.color = 'inherit';
   if (!b || !b.available) {
     c.innerHTML = `
       <div class="card-title">
