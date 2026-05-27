@@ -15,10 +15,13 @@ Lightweight web dashboard for Raspberry Pi system monitoring. A single Python fi
 - **Temperature** — CPU temp with normal / warning / critical thresholds
 - **Disk** — usage for an external SSD mount (configurable)
 - **UPS** — power source and battery level (reads `/run/ups_status.json` when available)
+- **BirdNET Mic** — Pico 2W connection status, data received, and transfer rate (reads `journalctl -u birdnet-mic-bridge`)
 - **Top processes** — top 10 by CPU and memory
 - Auto-refreshes every 5 seconds; responsive grid layout
 
 UPS data is optional. If `/run/ups_status.json` is missing, the UPS cards show *unavailable*. That file is typically written by a separate UPS monitor service (e.g. [Waveshare UPS HAT monitor](https://github.com/pR13S7/PiDashboard#ups-integration)).
+
+BirdNET Mic data is optional. If the `birdnet-mic-bridge` systemd service is not installed or `journalctl` returns no output, the card shows *unavailable*. The service is part of [BirdNET-Wifi-Pico-mic](https://github.com/pR13S7/BirdNET-Wifi-Pico-mic).
 
 ## Requirements
 
@@ -101,6 +104,7 @@ Any process that writes this file to `UPS_STATUS_FILE` will populate the UPS car
   "ups": {"available": true, "on_battery": false, "percent": 92},
   "top_cpu": [{"pid": 1234, "name": "python3", "cpu": 12.5, "mem": 3.2}],
   "top_mem": [],
+  "birdnet_bridge": {"available": true, "connected": true, "data_kb": 2451.0, "rate_kbps": 22.3, "peer_ip": "192.168.0.105"},
   "hostname": "pi",
   "timestamp": "2026-05-19 10:00:00"
 }

@@ -199,12 +199,14 @@ def read_birdnet_bridge():
             try:
                 data_kb = float(parts[0])
                 rate_kbps = float(parts[2])
+                connected = True
             except (IndexError, ValueError):
                 pass
         elif "[bridge]" in line and "MB received" in line:
             parts = line.split("[bridge]")[1].split()
             try:
                 data_kb = float(parts[0]) * 1024
+                connected = True
             except (IndexError, ValueError):
                 pass
 
@@ -721,7 +723,10 @@ function mkBirdnet(b) {
       <div>Data: <span class="v" id="bn-data">${dataStr}</span></div>
       <div>Rate: <span class="v" id="bn-rate">${
         b.connected ? b.rate_kbps+' KB/s' : '—'}</span></div>
-      ${b.peer_ip ? '<div style="font-size:11px;color:var(--text3)" id="bn-ip">Pico: '+esc(b.peer_ip)+'</div>' : '<div id="bn-ip"></div>'}
+      ${b.peer_ip
+        ? '<div style="font-size:11px;color:var(--text3)" id="bn-ip">Pico: '
+          +esc(b.peer_ip)+'</div>'
+        : '<div id="bn-ip"></div>'}
     </div>`;
   return c;
 }
