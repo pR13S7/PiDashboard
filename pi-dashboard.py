@@ -161,6 +161,62 @@ def read_ups():
         return {"available": False}
 
 
+def read_birdnet_bridge():
+    """Parse recent journalctl output for birdnet-mic-bridge status."""
+    try:
+        r = subprocess.run(
+            ["journalctl", "-u", "birdnet-mic-bridge", "--no-pager",
+             "-n", "50", "-o", "cat"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        if r.returncode != 0 or not r.stdout.strip():
+            return {"available": False}
+    except Exception:
+        return {"available": False}
+
+    connected = False
+    data_kb = 0.0
+    rate_kbps = 0.0
+    peer_ip = None
+
+    for line in r.stdout.strip().splitlines():
+        if "[bridge] Connected:" in line:
+            connected = True
+            data_kb = 0.0
+            rate_kbps = 0.0
+            start = line.find("('")
+            end = line.find("'", start + 2)
+            if start != -1 and end != -1:
+                peer_ip = line[start + 2:end]
+        elif "[bridge] Waiting for Pico 2W connection..." in line:
+            connected = False
+            rate_kbps = 0.0
+        elif "[bridge] Connection lost:" in line:
+            connected = False
+            rate_kbps = 0.0
+        elif "[bridge]" in line and "KB" in line and "KB/s" in line:
+            parts = line.split("[bridge]")[1].split()
+            try:
+                data_kb = float(parts[0])
+                rate_kbps = float(parts[2])
+            except (IndexError, ValueError):
+                pass
+        elif "[bridge]" in line and "MB received" in line:
+            parts = line.split("[bridge]")[1].split()
+            try:
+                data_kb = float(parts[0]) * 1024
+            except (IndexError, ValueError):
+                pass
+
+    return {
+        "available": True,
+        "connected": connected,
+        "data_kb": round(data_kb, 1),
+        "rate_kbps": round(rate_kbps, 1),
+        "peer_ip": peer_ip,
+    }
+
+
 _INTERPRETERS = {"python", "python3", "python2", "java", "node", "nodejs",
                  "perl", "ruby", "bash", "sh", "zsh"}
 
@@ -232,6 +288,7 @@ def api_stats():
         "ups": read_ups(),
         "top_cpu": read_top_processes("cpu"),
         "top_mem": read_top_processes("mem"),
+        "birdnet_bridge": read_birdnet_bridge(),
         "hostname": socket.gethostname(),
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     })
@@ -346,6 +403,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",
 .ptable .pbar-fill{height:100%;border-radius:3px}
 .card.wide{grid-column:span 1}
 
+/* UPS + BirdNET group */
+.ups-group{grid-column:span 2;display:grid;
+  grid-template-columns:1fr 1fr;gap:16px}
+.ups-stack{display:flex;flex-direction:column;gap:16px}
+.ups-group .card{margin:0}
+
 /* local services */
 .svc-list{display:flex;flex-wrap:wrap;gap:8px}
 .svc-link{flex:1 1 140px;display:flex;align-items:center;gap:10px;
@@ -372,6 +435,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",
 }
 @media(max-width:560px){
   .grid{grid-template-columns:1fr;padding:12px}
+  .ups-group{grid-column:span 1;grid-template-columns:1fr}
   .hdr{padding:16px 12px 10px}
   .gauge{width:80px;height:80px}
   .gauge-text{font-size:18px}
@@ -628,6 +692,40 @@ function battBadge(pct) {
   return '<span class="badge red">'+pct+'%</span>';
 }
 
+function mkBirdnet(b) {
+  var c = document.createElement('div');
+  c.className = 'card';
+  c.id = 'birdnet-card';
+  if (!b || !b.available) {
+    c.innerHTML = `
+      <div class="card-title">
+        <span class="icon">&#127908;</span> BirdNET Mic
+      </div>
+      <div class="info">
+        <span class="badge muted">unavailable</span>
+      </div>`;
+    return c;
+  }
+  var statusBadge = b.connected
+    ? '<span class="badge green">connected</span>'
+    : '<span class="badge yellow">waiting</span>';
+  var dataStr = b.data_kb >= 1024
+    ? (b.data_kb/1024).toFixed(1)+' MB'
+    : b.data_kb.toFixed(0)+' KB';
+  c.innerHTML = `
+    <div class="card-title">
+      <span class="icon">&#127908;</span> BirdNET Mic
+    </div>
+    <div class="info">
+      <div>Status: <span id="bn-status">${statusBadge}</span></div>
+      <div>Data: <span class="v" id="bn-data">${dataStr}</span></div>
+      <div>Rate: <span class="v" id="bn-rate">${
+        b.connected ? b.rate_kbps+' KB/s' : '—'}</span></div>
+      ${b.peer_ip ? '<div style="font-size:11px;color:var(--text3)" id="bn-ip">Pico: '+esc(b.peer_ip)+'</div>' : '<div id="bn-ip"></div>'}
+    </div>`;
+  return c;
+}
+
 function procRows(list, valKey) {
   if (!list || !list.length)
     return '<tr><td colspan="4" style="color:var(--text3)">no data</td></tr>';
@@ -726,8 +824,15 @@ function build(d) {
   g.appendChild(mkCPU(d.cpu));
   g.appendChild(mkTemp(d.temperature));
   g.appendChild(mkDisk(d.disk));
-  g.appendChild(mkUPSStatus(d.ups));
-  g.appendChild(mkUPSBattery(d.ups));
+  var upsGrp = document.createElement('div');
+  upsGrp.className = 'ups-group';
+  var upsStack = document.createElement('div');
+  upsStack.className = 'ups-stack';
+  upsStack.appendChild(mkUPSStatus(d.ups));
+  upsStack.appendChild(mkUPSBattery(d.ups));
+  upsGrp.appendChild(upsStack);
+  upsGrp.appendChild(mkBirdnet(d.birdnet_bridge));
+  g.appendChild(upsGrp);
   g.appendChild(mkTopCPU(d.top_cpu));
   g.appendChild(mkTopMem(d.top_mem));
 }
@@ -789,6 +894,23 @@ function update(d) {
     setR('batt',bp,battColor(bp));
     sT('batt-t',Math.round(bp)+'%');
     sH('batt-b',battBadge(bp));
+  }
+
+  // BirdNET
+  var bn=d.birdnet_bridge;
+  if(bn && bn.available){
+    var bnStatus=bn.connected
+      ? '<span class="badge green">connected</span>'
+      : '<span class="badge yellow">waiting</span>';
+    sH('bn-status',bnStatus);
+    var bnData=bn.data_kb>=1024
+      ? (bn.data_kb/1024).toFixed(1)+' MB'
+      : bn.data_kb.toFixed(0)+' KB';
+    sT('bn-data',bnData);
+    sT('bn-rate',bn.connected ? bn.rate_kbps+' KB/s' : '—');
+    var bnIp=$('bn-ip');
+    if(bnIp) bnIp.innerHTML=bn.peer_ip
+      ? '<span style="font-size:11px;color:var(--text3)">Pico: '+esc(bn.peer_ip)+'</span>' : '';
   }
 
   // Top CPU
