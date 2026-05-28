@@ -161,11 +161,11 @@ def read_ups():
         return {"available": False}
 
 
-def read_birdnet_bridge():
-    """Parse recent journalctl output for birdnet-mic-bridge status."""
+def read_birdnet_bridge(service="birdnet-mic-bridge"):
+    """Parse recent journalctl output for a mic bridge service."""
     try:
         r = subprocess.run(
-            ["journalctl", "-u", "birdnet-mic-bridge", "--no-pager",
+            ["journalctl", "-u", service, "--no-pager",
              "-n", "50", "-o", "cat"],
             capture_output=True, text=True, timeout=5, check=False,
         )
@@ -188,7 +188,7 @@ def read_birdnet_bridge():
             end = line.find("'", start + 2)
             if start != -1 and end != -1:
                 peer_ip = line[start + 2:end]
-        elif "[bridge] Waiting for Pico 2W connection..." in line:
+        elif "Waiting for" in line and "connection..." in line:
             connected = False
             rate_kbps = 0.0
         elif "[bridge] Connection lost:" in line:
@@ -290,7 +290,8 @@ def api_stats():
         "ups": read_ups(),
         "top_cpu": read_top_processes("cpu"),
         "top_mem": read_top_processes("mem"),
-        "birdnet_bridge": read_birdnet_bridge(),
+        "birdnet_mic1": read_birdnet_bridge("birdnet-mic-bridge"),
+        "birdnet_mic2": read_birdnet_bridge("birdnet-mic-bridge-2"),
         "hostname": socket.gethostname(),
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     })
@@ -694,10 +695,10 @@ function battBadge(pct) {
   return '<span class="badge red">'+pct+'%</span>';
 }
 
-function mkBirdnet(b) {
+function mkBirdnet(b, label, prefix, device) {
   var c = document.createElement('a');
   c.className = 'card';
-  c.id = 'birdnet-card';
+  c.id = prefix+'-card';
   c.href = 'http://pi.lan/';
   c.target = '_blank';
   c.rel = 'noopener';
@@ -706,7 +707,7 @@ function mkBirdnet(b) {
   if (!b || !b.available) {
     c.innerHTML = `
       <div class="card-title">
-        <span class="icon">&#127908;</span> BirdNET Mic
+        <span class="icon">&#127908;</span> ${esc(label)}
       </div>
       <div class="info">
         <span class="badge muted">unavailable</span>
@@ -721,17 +722,17 @@ function mkBirdnet(b) {
     : b.data_kb.toFixed(0)+' KB';
   c.innerHTML = `
     <div class="card-title">
-      <span class="icon">&#127908;</span> BirdNET Mic
+      <span class="icon">&#127908;</span> ${esc(label)}
     </div>
     <div class="info">
-      <div>Status: <span id="bn-status">${statusBadge}</span></div>
-      <div>Data: <span class="v" id="bn-data">${dataStr}</span></div>
-      <div>Rate: <span class="v" id="bn-rate">${
+      <div>Status: <span id="${prefix}-status">${statusBadge}</span></div>
+      <div>Data: <span class="v" id="${prefix}-data">${dataStr}</span></div>
+      <div>Rate: <span class="v" id="${prefix}-rate">${
         b.connected ? b.rate_kbps+' KB/s' : '—'}</span></div>
       ${b.peer_ip
-        ? '<div style="font-size:11px;color:var(--text3)" id="bn-ip">Pico: '
-          +esc(b.peer_ip)+'</div>'
-        : '<div id="bn-ip"></div>'}
+        ? '<div style="font-size:11px;color:var(--text3)" id="'
+          +prefix+'-ip">'+esc(device)+': '+esc(b.peer_ip)+'</div>'
+        : '<div id="'+prefix+'-ip"></div>'}
     </div>`;
   return c;
 }
@@ -841,7 +842,11 @@ function build(d) {
   upsStack.appendChild(mkUPSStatus(d.ups));
   upsStack.appendChild(mkUPSBattery(d.ups));
   upsGrp.appendChild(upsStack);
-  upsGrp.appendChild(mkBirdnet(d.birdnet_bridge));
+  var micStack = document.createElement('div');
+  micStack.className = 'ups-stack';
+  micStack.appendChild(mkBirdnet(d.birdnet_mic1,'Mic: Pico 2W','bn1','Pico'));
+  micStack.appendChild(mkBirdnet(d.birdnet_mic2,'Mic: ESP32-S3','bn2','ESP32'));
+  upsGrp.appendChild(micStack);
   g.appendChild(upsGrp);
   g.appendChild(mkTopCPU(d.top_cpu));
   g.appendChild(mkTopMem(d.top_mem));
@@ -906,22 +911,25 @@ function update(d) {
     sH('batt-b',battBadge(bp));
   }
 
-  // BirdNET
-  var bn=d.birdnet_bridge;
-  if(bn && bn.available){
-    var bnStatus=bn.connected
+  // BirdNET mics
+  function updateMic(b, prefix, device) {
+    if(!b || !b.available) return;
+    var st=b.connected
       ? '<span class="badge green">connected</span>'
       : '<span class="badge yellow">waiting</span>';
-    sH('bn-status',bnStatus);
-    var bnData=bn.data_kb>=1024
-      ? (bn.data_kb/1024).toFixed(1)+' MB'
-      : bn.data_kb.toFixed(0)+' KB';
-    sT('bn-data',bnData);
-    sT('bn-rate',bn.connected ? bn.rate_kbps+' KB/s' : '—');
-    var bnIp=$('bn-ip');
-    if(bnIp) bnIp.innerHTML=bn.peer_ip
-      ? '<span style="font-size:11px;color:var(--text3)">Pico: '+esc(bn.peer_ip)+'</span>' : '';
+    sH(prefix+'-status',st);
+    var ds=b.data_kb>=1024
+      ? (b.data_kb/1024).toFixed(1)+' MB'
+      : b.data_kb.toFixed(0)+' KB';
+    sT(prefix+'-data',ds);
+    sT(prefix+'-rate',b.connected ? b.rate_kbps+' KB/s' : '—');
+    var ip=$(prefix+'-ip');
+    if(ip) ip.innerHTML=b.peer_ip
+      ? '<span style="font-size:11px;color:var(--text3)">'
+        +esc(device)+': '+esc(b.peer_ip)+'</span>' : '';
   }
+  updateMic(d.birdnet_mic1,'bn1','Pico');
+  updateMic(d.birdnet_mic2,'bn2','ESP32');
 
   // Top CPU
   var tcTbl=$('tcpu-tbl');
