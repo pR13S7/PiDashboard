@@ -6,7 +6,7 @@ Serves a web UI showing system metrics and UPS battery status.
 Reads system info from /proc, /sys, and UPS data from /run/ups_status.json
 (written by ups-battery-monitor.py).
 
-Requires: pip3 install bottle
+Requires: pip3 install -r requirements.txt
 Usage:    python3 pi-dashboard.py
 Web UI:   http://<pi-ip>:8585
 """
@@ -14,6 +14,8 @@ Web UI:   http://<pi-ip>:8585
 import json
 import socket
 import subprocess
+import threading
+import time
 from datetime import datetime
 from functools import lru_cache
 
@@ -22,7 +24,9 @@ from bottle import Bottle, response
 # ================== CONFIG ==================
 PORT = 8585
 HOST = "0.0.0.0"
-REFRESH_INTERVAL = 5          # seconds (frontend auto-refresh)
+REFRESH_INTERVAL = 10         # seconds (frontend auto-refresh)
+METRIC_CACHE_TTL = 5          # seconds — cache expensive subprocess collectors
+WAITRESS_THREADS = 8          # concurrent request threads
 UPS_STATUS_FILE = "/run/ups_status.json"
 DISK_PATH = "/media/storage"  # external SSD
 TEMP_WARNING = 70             # °C — yellow
@@ -30,6 +34,24 @@ TEMP_CRITICAL = 80            # °C — red
 
 # ================== APP ==================
 app = Bottle()
+
+# ================== TTL CACHE (thread-safe for Waitress) ==================
+
+_metric_cache = {}
+_metric_cache_lock = threading.Lock()
+
+
+def _cached_metric(key, ttl, producer):
+    """Return cached value when younger than ttl; otherwise refresh."""
+    now = time.monotonic()
+    with _metric_cache_lock:
+        entry = _metric_cache.get(key)
+        if entry is not None and now - entry[0] < ttl:
+            return entry[1]
+    value = producer()
+    with _metric_cache_lock:
+        _metric_cache[key] = (now, value)
+    return value
 
 
 # ================== METRIC READERS ==================
@@ -161,7 +183,7 @@ def read_ups():
         return {"available": False}
 
 
-def read_birdnet_bridge(service="birdnet-mic-bridge"):
+def _read_birdnet_bridge(service="birdnet-mic-bridge"):
     """Parse recent journalctl output for a mic bridge service."""
     try:
         r = subprocess.run(
@@ -219,6 +241,15 @@ def read_birdnet_bridge(service="birdnet-mic-bridge"):
     }
 
 
+def read_birdnet_bridge(service="birdnet-mic-bridge"):
+    """Cached wrapper around journalctl-based BirdNET bridge reader."""
+    return _cached_metric(
+        f"birdnet:{service}",
+        METRIC_CACHE_TTL,
+        lambda: _read_birdnet_bridge(service),
+    )
+
+
 _INTERPRETERS = {"python", "python3", "python2", "java", "node", "nodejs",
                  "perl", "ruby", "bash", "sh", "zsh"}
 
@@ -245,7 +276,7 @@ def _friendly_name(args_str):
     return base
 
 
-def read_top_processes(sort_key="cpu", count=10):
+def _read_top_processes(sort_key="cpu", count=10):
     """Return top processes sorted by CPU or memory usage.
 
     Uses ``ps`` with ``args`` instead of ``comm`` so we can extract a
@@ -273,6 +304,15 @@ def read_top_processes(sort_key="cpu", count=10):
         return procs
     except Exception:
         return []
+
+
+def read_top_processes(sort_key="cpu", count=10):
+    """Cached wrapper around ps-based process list reader."""
+    return _cached_metric(
+        f"top:{sort_key}:{count}",
+        METRIC_CACHE_TTL,
+        lambda: _read_top_processes(sort_key, count),
+    )
 
 
 # ================== ROUTES ==================
@@ -957,8 +997,12 @@ setInterval(refresh, REFRESH);
 # ================== MAIN ==================
 
 if __name__ == "__main__":
+    from waitress import serve
+
     print(f"Pi Dashboard starting on http://{HOST}:{PORT}")
+    print(f"Server: Waitress ({WAITRESS_THREADS} threads)")
     print(f"UPS status file: {UPS_STATUS_FILE}")
     print(f"Monitoring disk: {DISK_PATH}")
     print(f"Refresh interval: {REFRESH_INTERVAL}s")
-    app.run(host=HOST, port=PORT, quiet=True)
+    print(f"Metric cache TTL: {METRIC_CACHE_TTL}s")
+    serve(app, host=HOST, port=PORT, threads=WAITRESS_THREADS)

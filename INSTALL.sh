@@ -31,10 +31,10 @@ mkdir -p "$INSTALL_DIR"
 python3 -m venv "$VENV_DIR"
 echo "      venv created ✓"
 
-# --- install python dependency ---
-echo "[3/6] Installing bottle in venv..."
-"$VENV_DIR/bin/pip" install --quiet bottle
-echo "      bottle installed ✓"
+# --- install python dependencies ---
+echo "[3/6] Installing dependencies in venv..."
+"$VENV_DIR/bin/pip" install --quiet -r "$SCRIPT_DIR/requirements.txt"
+echo "      dependencies installed ✓"
 
 # --- copy dashboard script ---
 echo "[4/6] Copying pi-dashboard.py → $DEST"

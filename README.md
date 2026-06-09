@@ -17,7 +17,7 @@ Lightweight web dashboard for Raspberry Pi system monitoring. A single Python fi
 - **UPS** — power source and battery level (reads `/run/ups_status.json` when available)
 - **BirdNET Mic** — Pico 2W connection status, data received, and transfer rate (reads `journalctl -u birdnet-mic-bridge`)
 - **Top processes** — top 10 by CPU and memory
-- Auto-refreshes every 5 seconds; responsive grid layout
+- Auto-refreshes every 10 seconds; responsive grid layout
 
 UPS data is optional. If `/run/ups_status.json` is missing, the UPS cards show *unavailable*. That file is typically written by a separate UPS monitor service (e.g. [Waveshare UPS HAT monitor](https://github.com/pR13S7/PiDashboard#ups-integration)).
 
@@ -26,11 +26,12 @@ BirdNET Mic data is optional. If the `birdnet-mic-bridge` systemd service is not
 ## Requirements
 
 - Raspberry Pi (or any Linux host) with Python 3
-- [Bottle](https://bottlepy.org/) — the only Python dependency
+- [Bottle](https://bottlepy.org/) — web framework
+- [Waitress](https://docs.pylonsproject.org/projects/waitress/) — threaded WSGI server (production runtime)
 
 ## Quick install (Raspberry Pi)
 
-Run on the Pi as root. This creates a venv at `/opt/pi-dashboard`, installs Bottle, and registers a systemd service:
+Run on the Pi as root. This creates a venv at `/opt/pi-dashboard`, installs dependencies, and registers a systemd service:
 
 ```bash
 git clone git@github.com:pR13S7/PiDashboard.git
@@ -54,7 +55,7 @@ pip3 install -r requirements.txt
 python3 pi-dashboard.py
 ```
 
-Press `Ctrl+C` to stop.
+Press `Ctrl+C` to stop. The app runs under Waitress with multiple request threads so slow metric reads do not block page loads.
 
 ## Configuration
 
@@ -64,7 +65,9 @@ Edit the constants at the top of `pi-dashboard.py`:
 |---------|---------|-------------|
 | `PORT` | `8585` | HTTP port |
 | `HOST` | `0.0.0.0` | Bind address |
-| `REFRESH_INTERVAL` | `5` | UI refresh interval (seconds) |
+| `REFRESH_INTERVAL` | `10` | UI refresh interval (seconds) |
+| `METRIC_CACHE_TTL` | `5` | Cache TTL for `journalctl` / `ps` collectors (seconds) |
+| `WAITRESS_THREADS` | `8` | Concurrent request threads |
 | `UPS_STATUS_FILE` | `/run/ups_status.json` | UPS status JSON path |
 | `DISK_PATH` | `/media/storage` | External disk mount to monitor |
 | `TEMP_WARNING` | `70` | CPU temp (°C) — yellow |
