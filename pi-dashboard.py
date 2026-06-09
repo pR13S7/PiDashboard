@@ -12,10 +12,11 @@ Web UI:   http://<pi-ip>:8585
 """
 
 import json
-import socket
+import os
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from functools import lru_cache
 
@@ -25,7 +26,8 @@ from bottle import Bottle, response
 PORT = 8585
 HOST = "0.0.0.0"
 REFRESH_INTERVAL = 10         # seconds (frontend auto-refresh)
-METRIC_CACHE_TTL = 5          # seconds — cache expensive subprocess collectors
+API_SNAPSHOT_INTERVAL = 5     # seconds — background metric refresh
+SUBPROCESS_TIMEOUT = 3        # seconds — cap per shell command
 WAITRESS_THREADS = 8          # concurrent request threads
 UPS_STATUS_FILE = "/run/ups_status.json"
 DISK_PATH = "/media/storage"  # external SSD
@@ -35,26 +37,32 @@ TEMP_CRITICAL = 80            # °C — red
 # ================== APP ==================
 app = Bottle()
 
-# ================== TTL CACHE (thread-safe for Waitress) ==================
+# ================== METRICS SNAPSHOT (background refresh) ==================
 
-_metric_cache = {}
-_metric_cache_lock = threading.Lock()
-
-
-def _cached_metric(key, ttl, producer):
-    """Return cached value when younger than ttl; otherwise refresh."""
-    now = time.monotonic()
-    with _metric_cache_lock:
-        entry = _metric_cache.get(key)
-        if entry is not None and now - entry[0] < ttl:
-            return entry[1]
-    value = producer()
-    with _metric_cache_lock:
-        _metric_cache[key] = (now, value)
-    return value
+_stats_snapshot = {}
+_stats_lock = threading.Lock()
+_stats_ready = threading.Event()
 
 
-# ================== METRIC READERS ==================
+@lru_cache(maxsize=1)
+def read_hostname():
+    """Return host name without DNS lookups (socket.gethostname can block)."""
+    try:
+        with open("/etc/hostname", encoding="utf-8") as f:
+            name = f.read().strip()
+            if name:
+                return name
+    except OSError:
+        pass
+    return os.uname().nodename
+
+
+def _run_cmd(cmd):
+    """Run a subprocess with a hard timeout."""
+    return subprocess.run(
+        cmd, capture_output=True, text=True,
+        timeout=SUBPROCESS_TIMEOUT, check=False,
+    )
 
 @lru_cache(maxsize=1)
 def read_cpu_count():
@@ -125,10 +133,7 @@ def read_disk():
     as the external SSD.
     """
     try:
-        r = subprocess.run(
-            ["df", "-B1", DISK_PATH],
-            capture_output=True, text=True, timeout=5, check=False,
-        )
+        r = _run_cmd(["df", "-B1", DISK_PATH])
         if r.returncode != 0:
             return None
         parts = r.stdout.strip().split("\n")[1].split()
@@ -183,14 +188,13 @@ def read_ups():
         return {"available": False}
 
 
-def _read_birdnet_bridge(service="birdnet-mic-bridge"):
+def read_birdnet_bridge(service="birdnet-mic-bridge"):
     """Parse recent journalctl output for a mic bridge service."""
     try:
-        r = subprocess.run(
-            ["journalctl", "-u", service, "--no-pager",
-             "-n", "50", "-o", "cat"],
-            capture_output=True, text=True, timeout=5, check=False,
-        )
+        r = _run_cmd([
+            "journalctl", "-u", service, "--no-pager",
+            "-n", "50", "-o", "cat",
+        ])
         if r.returncode != 0 or not r.stdout.strip():
             return {"available": False}
     except Exception:
@@ -241,15 +245,6 @@ def _read_birdnet_bridge(service="birdnet-mic-bridge"):
     }
 
 
-def read_birdnet_bridge(service="birdnet-mic-bridge"):
-    """Cached wrapper around journalctl-based BirdNET bridge reader."""
-    return _cached_metric(
-        f"birdnet:{service}",
-        METRIC_CACHE_TTL,
-        lambda: _read_birdnet_bridge(service),
-    )
-
-
 _INTERPRETERS = {"python", "python3", "python2", "java", "node", "nodejs",
                  "perl", "ruby", "bash", "sh", "zsh"}
 
@@ -276,7 +271,7 @@ def _friendly_name(args_str):
     return base
 
 
-def _read_top_processes(sort_key="cpu", count=10):
+def read_top_processes(sort_key="cpu", count=10):
     """Return top processes sorted by CPU or memory usage.
 
     Uses ``ps`` with ``args`` instead of ``comm`` so we can extract a
@@ -284,10 +279,9 @@ def _read_top_processes(sort_key="cpu", count=10):
     """
     flag = "-%cpu" if sort_key == "cpu" else "-%mem"
     try:
-        r = subprocess.run(
-            ["ps", "-eo", "pid,%cpu,%mem,args", "--sort", flag, "--no-headers"],
-            capture_output=True, text=True, timeout=5, check=False,
-        )
+        r = _run_cmd([
+            "ps", "-eo", "pid,%cpu,%mem,args", "--sort", flag, "--no-headers",
+        ])
         if r.returncode != 0:
             return []
         procs = []
@@ -306,35 +300,84 @@ def _read_top_processes(sort_key="cpu", count=10):
         return []
 
 
-def read_top_processes(sort_key="cpu", count=10):
-    """Cached wrapper around ps-based process list reader."""
-    return _cached_metric(
-        f"top:{sort_key}:{count}",
-        METRIC_CACHE_TTL,
-        lambda: _read_top_processes(sort_key, count),
-    )
+def _collect_slow_metrics():
+    """Run subprocess-based collectors in parallel (used by background thread)."""
+    tasks = {
+        "disk": lambda: read_disk(),
+        "birdnet_mic1": lambda: read_birdnet_bridge("birdnet-mic-bridge"),
+        "birdnet_mic2": lambda: read_birdnet_bridge("birdnet-mic-bridge-2"),
+        "top_cpu": lambda: read_top_processes("cpu"),
+        "top_mem": lambda: read_top_processes("mem"),
+    }
+    results = {}
+    with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
+        futures = {pool.submit(fn): key for key, fn in tasks.items()}
+        for future in as_completed(futures):
+            key = futures[future]
+            try:
+                results[key] = future.result()
+            except Exception:
+                if key == "disk":
+                    results[key] = None
+                elif key.startswith("birdnet"):
+                    results[key] = {"available": False}
+                else:
+                    results[key] = []
+    return results
+
+
+def _build_stats_snapshot():
+    """Collect all metrics for one API snapshot."""
+    slow = _collect_slow_metrics()
+    return {
+        "cpu": read_load(),
+        "memory": read_memory(),
+        "temperature": read_temperature(),
+        "disk": slow.get("disk"),
+        "uptime": read_uptime(),
+        "ups": read_ups(),
+        "top_cpu": slow.get("top_cpu", []),
+        "top_mem": slow.get("top_mem", []),
+        "birdnet_mic1": slow.get("birdnet_mic1", {"available": False}),
+        "birdnet_mic2": slow.get("birdnet_mic2", {"available": False}),
+        "hostname": read_hostname(),
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def _refresh_stats_snapshot():
+    """Update the in-memory snapshot served by /api/stats."""
+    snapshot = _build_stats_snapshot()
+    with _stats_lock:
+        _stats_snapshot.clear()
+        _stats_snapshot.update(snapshot)
+    _stats_ready.set()
+
+
+def _stats_refresh_loop():
+    """Background loop — keeps API responses instant."""
+    while True:
+        _refresh_stats_snapshot()
+        time.sleep(API_SNAPSHOT_INTERVAL)
+
+
+def start_stats_refresh():
+    """Warm snapshot before accepting traffic, then refresh in background."""
+    _refresh_stats_snapshot()
+    threading.Thread(target=_stats_refresh_loop, daemon=True, name="stats-refresh").start()
 
 
 # ================== ROUTES ==================
 
 @app.route("/api/stats")
 def api_stats():
-    """JSON API — all metrics in one call."""
+    """JSON API — returns pre-built snapshot (no per-request collectors)."""
     response.content_type = "application/json"
-    return json.dumps({
-        "cpu": read_load(),
-        "memory": read_memory(),
-        "temperature": read_temperature(),
-        "disk": read_disk(),
-        "uptime": read_uptime(),
-        "ups": read_ups(),
-        "top_cpu": read_top_processes("cpu"),
-        "top_mem": read_top_processes("mem"),
-        "birdnet_mic1": read_birdnet_bridge("birdnet-mic-bridge"),
-        "birdnet_mic2": read_birdnet_bridge("birdnet-mic-bridge-2"),
-        "hostname": socket.gethostname(),
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-    })
+    if not _stats_ready.wait(timeout=SUBPROCESS_TIMEOUT + 2):
+        response.status = 503
+        return json.dumps({"error": "metrics not ready"})
+    with _stats_lock:
+        return json.dumps(dict(_stats_snapshot))
 
 
 @app.route("/")
@@ -1003,6 +1046,7 @@ if __name__ == "__main__":
     print(f"Server: Waitress ({WAITRESS_THREADS} threads)")
     print(f"UPS status file: {UPS_STATUS_FILE}")
     print(f"Monitoring disk: {DISK_PATH}")
-    print(f"Refresh interval: {REFRESH_INTERVAL}s")
-    print(f"Metric cache TTL: {METRIC_CACHE_TTL}s")
+    print(f"UI refresh interval: {REFRESH_INTERVAL}s")
+    print(f"API snapshot interval: {API_SNAPSHOT_INTERVAL}s")
+    start_stats_refresh()
     serve(app, host=HOST, port=PORT, threads=WAITRESS_THREADS)

@@ -55,7 +55,7 @@ pip3 install -r requirements.txt
 python3 pi-dashboard.py
 ```
 
-Press `Ctrl+C` to stop. The app runs under Waitress with multiple request threads so slow metric reads do not block page loads.
+Press `Ctrl+C` to stop. Metrics are refreshed in a background thread; `/api/stats` returns the latest snapshot instantly. The app runs under Waitress with multiple request threads.
 
 ## Configuration
 
@@ -66,7 +66,8 @@ Edit the constants at the top of `pi-dashboard.py`:
 | `PORT` | `8585` | HTTP port |
 | `HOST` | `0.0.0.0` | Bind address |
 | `REFRESH_INTERVAL` | `10` | UI refresh interval (seconds) |
-| `METRIC_CACHE_TTL` | `5` | Cache TTL for `journalctl` / `ps` collectors (seconds) |
+| `API_SNAPSHOT_INTERVAL` | `5` | Background metric refresh (seconds) |
+| `SUBPROCESS_TIMEOUT` | `3` | Max seconds per shell command |
 | `WAITRESS_THREADS` | `8` | Concurrent request threads |
 | `UPS_STATUS_FILE` | `/run/ups_status.json` | UPS status JSON path |
 | `DISK_PATH` | `/media/storage` | External disk mount to monitor |
